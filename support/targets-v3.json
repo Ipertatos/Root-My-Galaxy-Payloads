@@ -91,6 +91,20 @@
       }
     },
     {
+      "payloadId": "e3q-S928BXXS6DZE1",
+      "displayName": "Galaxy S24 Ultra | Kernel 6.1.145 (PR#31 DZE1)",
+      "models": ["SM-S928B"],
+      "kernelVersions": ["6.1.145"],
+      "exploit": {
+        "url": "https://raw.githubusercontent.com/Ipertatos/Root-My-Galaxy-Payloads/main/artifacts/e3q-S928BXXS6DZE1/cve-2026-43499-app.so",
+        "size": 104128
+      },
+      "kernelsu": {
+        "url": "https://raw.githubusercontent.com/Ipertatos/Root-My-Galaxy-Payloads/main/kernelsu/ksud-e3q-S928BXXS6DZE1-kdp",
+        "size": 4783000
+      }
+    },
+    {
       "payloadId": "e2s-S926BXXUEDZDR",
       "displayName": "Galaxy S24+ | Kernel 6.1.157",
       "models": ["SM-S926B"],
