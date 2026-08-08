@@ -211,11 +211,14 @@ entry = load + text_offset(0):
 
 ## P0 fingerprint
 
-`tools/generate_p0_fingerprint.pl` against the raw CZC1 kernel at probe offset
-`0x1f0000` (`P0_ORACLE_PROBE_OFFSET`): all 32 rows verified with 256 source
-qwords read back, and the result is **byte-identical** to the checked-in
-`src/targets/e3q-S928BXXS5CZC1/p0_fingerprint.h` (SHA-256 of the file:
-403ad33fbf5b45246a33adfae7e4b7cf9d07842f432e96bf0145bad6eab3e1d8).
+`tools/generate_p0_fingerprint.pl` against the raw CZC1 kernel. The stock
+probe offset `0x1f0000` was found to be unusable on this device (it probes
+phys `0x80270000`, inside the nomap Gunyah hypervisor window — see
+"Fingerprint probe relocation" below). The fingerprint is now generated at
+probe offset `0x1aa0000` (`P0_ORACLE_PROBE_OFFSET`): all 32 rows verified
+with 256 source qwords read back, all rows pairwise-distinct with every
+word non-zero (SHA-256 of the file:
+3195b110697f67d0a3bfec0ac0b0327e68309cc734ee76d942ec82bfc9b9f765).
 
 ## Build
 
@@ -453,3 +456,79 @@ artifacts/e3q-S928BXXS5CZC1/cve-2026-43499-app.so
 size:    104128
 SHA-256: 70ea07b637d363672d03f3d9216adc5c1f0e76832ea3d8f895b07084ccf10382
 ```
+
+### Fingerprint probe relocation (run 4, panic in __arch_copy_to_user)
+
+Run 4 (fresh-session + corrected KernelSnitch tuning) panicked in attempt 3
+(pid 13901, `cve43499-run`), and this time the chain reached the P0 physical
+oracle: ftrace shows the `cve43499-p0ref` production thread active and the
+pipe oracle prepared (`base=ffffff8958078000`, matching X26 in the register
+dump). The panic:
+
+```text
+Unable to handle kernel paging request at virtual address ffffff8000270000
+ESR = 0x96000006  (DABT, level 2 translation fault, WnR=0)
+pgd=18000000b2c03003 pud=18000000b2c03003 pmd=0000000000000000
+pc : __arch_copy_to_user+0x180/0x238   lr : copyout+0x90/0x114
+Call trace: _copy_to_iter -> copy_page_to_iter -> pipe_read -> vfs_read
+x1/x15/x21 = ffffff8000270000   (source: direct-map alias of phys 0x80270000)
+x0 = 7ffb3367b8 (user dst)      x2 = 0xd88 (length)
+```
+
+The faulting read is the P0 fingerprint probe: `probe_va =
+P0_PAGE_OFFSET | (0x80000 + P0_ORACLE_PROBE_OFFSET)`, redirected through the
+poisoned `pipe_buffer`. With the stock `P0_ORACLE_PROBE_OFFSET 0x1f0000` the
+probe touches phys `0x80270000`, and `pmd=0` shows the whole 2 MiB block
+`[0x80200000, 0x80400000)` is absent from the direct map.
+
+The reserved-memory map (dumpstate "reserved-memory" dump + node names)
+explains why:
+
+```text
+gunyah_hyp_region   0x80000000 .. 0x80e00000  (14 MiB) nomap
+cpusys_vm_region    0x80e00000 .. 0x81200000  ( 4 MiB) nomap
+aop_cmd_db_region   0x81c60000 .. 0x81c80000  nomap
+aop_tme_uefi_region 0x81c80000 ..             nomap
+chipinfo_region     0x81cf4000                nomap
+smem_region         0x81d00000 ..             nomap
+pvmfw_region        0x824a0000 .. 0x825a0000  ( 1 MiB) nomap
+global_sync_region  0x82600000 .. 0x82700000  nomap
+tz_stat_region      0x82700000 .. 0x82800000  nomap
+```
+
+The kernel image is placed at `0x80080000+slide` (slide in `0..0x1f0000`),
+so its first ~13.5 MiB always overlap the Gunyah window; execution is
+unaffected (kernel text runs through its own mapping), but the linear alias
+the P0 oracle reads through is punched out. The stock probe offset — valid
+on targets without the low nomap carve-out — can never work here.
+
+Fix: `P0_ORACLE_PROBE_OFFSET 0x1f0000 -> 0x1aa0000`. The probe becomes phys
+`0x81b20000`, in plain RAM above the cpusys window and ~1.3 MiB below the
+aop cluster, inside the kernel image for every candidate slide. The
+fingerprint was regenerated with `tools/generate_p0_fingerprint.pl
+raw-kernel 0x1aa0000`; the row window (file `[0x18b0000, 0x1aa0e00)`) sits
+entirely in `.rodata` (file `[0x10f0000, 0x1d01000)`), so no row word can be
+perturbed by boot-time alternatives patching. All 32 rows are
+pairwise-distinct with 8/8 non-zero words (a brute-force sweep of
+page-aligned probes in `[0x1180000, 0x1be0000)` picked the strongest
+candidate; `0x1180000` produced sparse rows and `0x1300000` even colliding
+all-zero rows from the kallsyms string-table padding).
+
+Note for future ports on Gunyah devices: the post-discovery write targets
+(`nfulnl_logger` phys `0x8169b7b5+slide`, `bootid_data` `0x8230ab38+slide`,
+`sysctl_bootid` `0x825535a8+slide`) approach or enter the
+pvmfw/global_sync/tz_stat nomap band `[0x824a0000, 0x82800000)` for the
+highest slides (`slide >= 0x1a0000`). If a later stage ever faults at a
+`ffffff8002xxxxxx` alias address, that band is why; the virtual-base write
+path is unaffected.
+
+Rebuilt artifact (size unchanged, feed entry untouched):
+
+```text
+artifacts/e3q-S928BXXS5CZC1/cve-2026-43499-app.so
+size:    104128
+SHA-256: ce58fa945f300ff6a9497c5bb605d253a0a8fc9b77ce494011592596c131e872
+```
+
+Binary verification: all 16 sampled fingerprint words from the regenerated
+header are embedded in the release `.so`.

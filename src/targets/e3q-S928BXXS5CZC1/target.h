@@ -90,7 +90,12 @@
 #define P0_ORACLE_PRODUCTION_SLOT 4
 #define P0_ORACLE_GATE_PAGE_OFF 0x0e80
 #define P0_ORACLE_GATE_OBJECT_INDEX 1
-#define P0_ORACLE_PROBE_OFFSET 0x1f0000ULL
+// phys probe = 0x80080000 + 0x1aa0000 = 0x81b20000. The stock 0x1f0000
+// probes 0x80270000, inside the nomap gunyah_hyp window [0x80000000,
+// 0x80e00000) + cpusys_vm [0x80e00000, 0x81200000) -> pipe read panics.
+// 0x1aa0000 stays in plain RAM below the aop/smem nomap cluster at
+// 0x81c60000 and all 32 fingerprint rows are fully dense .rodata.
+#define P0_ORACLE_PROBE_OFFSET 0x1aa0000ULL
 #define P0_FINGERPRINT_HEADER \
   "targets/e3q-S928BXXS5CZC1/p0_fingerprint.h"
 #endif
