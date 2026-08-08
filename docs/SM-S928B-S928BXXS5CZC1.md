@@ -417,3 +417,39 @@ placement reliability, which the fresh-session design addresses. The next
 on-device run should either complete the P0 oracle or emit the fresh-session
 diagnostics (`fresh=N/8`, slabinfo dumps, wchan confirmations) needed to tune
 further.
+
+### Fresh-session run (run 3) and tuning corrections
+
+The fresh-session build ran 24 attempts with no crash. Two configuration
+defects surfaced immediately:
+
+1. `APP_RECLAIM_MAX_DIRECT_BASE 0xffffff8080000000` (copied from the Exynos
+   e1s/e2s profiles) rejects every legitimate reclaim candidate on this
+   device: all observed mm slab bases are `>= ffffff8800000000`
+   (e.g. `base=ffffff89feda8000 object_index=30` was in-band but rejected by
+   the bound). Removed from `target.h`; the check is `#ifdef`-compiled.
+2. The Exynos KernelSnitch tuning (`KSNITCH_COLLISIONS 5`,
+   `KERNELSNITCH_COLLISION_CONFIRMATIONS 3`) makes the leak unreliable on this
+   Snapdragon kernel: every attempt reported "found 4 collisisons" (never the
+   requested 5) and the pipe-page leak failed 23/24 attempts
+   (`pipe KernelSnitch sk_buff page leak failed`), while the previous build's
+   defaults (4 collisions, 1 confirmation) passed the pipe oracle stage every
+   attempt. Reverted to the defaults; `KERNELSNITCH_FUTEX_HASH_SIZE 0x1000`
+   was also dropped (it equals the computed default 16 CPUs x 256 = 4096, so
+   it was a no-op). `KERNELSNITCH_VERBOSE 1` is retained.
+
+Notable: attempt 7/24 completed the pipe oracle
+(`p0 pipe oracle prepared base=ffffff8002458000`) and ran the fresh-page
+search (8 batches); the one successful mm leak (`object_index=30`, inside the
+27..30 gate) was rejected only by the bad direct-map bound above. The
+supervisor's `p0_timeout=45` (set by the companion app via env) can cut a
+full 8-batch fresh search short (~40-56 s); with the leak reliability
+restored, early batches should succeed within budget.
+
+Rebuilt artifact:
+
+```text
+artifacts/e3q-S928BXXS5CZC1/cve-2026-43499-app.so
+size:    104128
+SHA-256: 70ea07b637d363672d03f3d9216adc5c1f0e76832ea3d8f895b07084ccf10382
+```
