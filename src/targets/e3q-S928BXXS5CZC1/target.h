@@ -17,7 +17,14 @@
 #define KIMAGE_TEXT_BASE 0xffffffc008000000ULL
 #define P0_PAGE_OFFSET 0xffffff8000000000ULL
 #define P0_PHYS_OFFSET 0x80000000ULL
-#define P0_KERNEL_PHYS_LOAD 0x80080000ULL
+// Decompressed kernel executes at 0xa8000000 + slide (64KB-stepped,
+// [0, 0x1f0000]) on this Gunyah device, NOT at the 0x80080000 ABL load
+// address of the compressed Image (that address is inside the nomap
+// gunyah_hyp window). Hardware-verified from two panic dumps:
+// swapper_pg_dir (image file off 0x1d0a000) sat at phys 0xa9dba000 in
+// run 4 (slide 0xb0000) and 0xa9d4a000 in run 5 (slide 0x40000), and the
+// sibling Qcom pa3q/q7q profiles use the same 0xa8000000 load base.
+#define P0_KERNEL_PHYS_LOAD 0xa8000000ULL
 #define SKB_DATA_DELTA (-0x1000LL)
 #define MM_STRUCT_SZ 0x400
 #define MM_ORDER 3
@@ -90,12 +97,12 @@
 #define P0_ORACLE_PRODUCTION_SLOT 4
 #define P0_ORACLE_GATE_PAGE_OFF 0x0e80
 #define P0_ORACLE_GATE_OBJECT_INDEX 1
-// phys probe = 0x80080000 + 0x1aa0000 = 0x81b20000. The stock 0x1f0000
-// probes 0x80270000, inside the nomap gunyah_hyp window [0x80000000,
-// 0x80e00000) + cpusys_vm [0x80e00000, 0x81200000) -> pipe read panics.
-// 0x1aa0000 stays in plain RAM below the aop/smem nomap cluster at
-// 0x81c60000 and all 32 fingerprint rows are fully dense .rodata.
-#define P0_ORACLE_PROBE_OFFSET 0x1aa0000ULL
+// phys probe = 0xa8000000 + 0x1f0000 = 0xa9f00000, inside the running
+// kernel's own mapped image region (swapper_pg_dir measured at phys
+// 0xa9d4a000/0xa9dba000 across boots, i.e. [0xa8000000, 0xab350000) is
+// plain mapped RAM; the next nomap region is kaslr_region at 0xb01ff000).
+// All 32 fingerprint rows are dense .rodata at this probe offset.
+#define P0_ORACLE_PROBE_OFFSET 0x1f0000ULL
 #define P0_FINGERPRINT_HEADER \
   "targets/e3q-S928BXXS5CZC1/p0_fingerprint.h"
 #endif

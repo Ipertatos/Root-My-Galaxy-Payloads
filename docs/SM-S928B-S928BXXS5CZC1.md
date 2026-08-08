@@ -532,3 +532,60 @@ SHA-256: ce58fa945f300ff6a9497c5bb605d253a0a8fc9b77ce494011592596c131e872
 
 Binary verification: all 16 sampled fingerprint words from the regenerated
 header are embedded in the release `.so`.
+
+## Kernel physical base correction (run 5, second `__arch_copy_to_user` panic)
+
+Run 5 (probe relocated to `0x1aa0000`) panicked identically to run 4, this
+time at virtual `ffffff8001b20000` / physical `0x81b20000` — again `pmd=0`.
+Conclusion: `[0x80000000, 0x81c00000)` is entirely nomap on this device, so the
+kernel image cannot be resident at `P0_KERNEL_PHYS_LOAD = 0x80080000` at all
+(any 64KB-stepped slide lands inside the hole).
+
+Root cause: `0x80080000` was taken from the ABL/LinuxLoader PE analysis, but
+that is only where ABL loads the *compressed* Image. The decompressor places
+the executing kernel much higher. Proof from the two panic dumps:
+
+- `swapper_pg_dir` sits at image file offset `0x1d0a000`
+  (`vmlinux.elf`, VA `ffffffc009d0a000`).
+- Run 4 oops printed `pgdp=00000000a9dba000` → text phys = `0xa9dba000 -
+  0x1d0a000 = 0xa80b0000` → slide `0xb0000` (valid 64KB candidate).
+- Run 5 oops printed `pgdp=00000000a9d4a000` → text phys = `0xa8040000` →
+  slide `0x40000` (valid 64KB candidate).
+
+Both boots put the kernel at `0xa8000000 + slide` with `slide` in the existing
+`[0, 0x1f0000]` candidate model — matching the sibling Qcom/Gunyah profiles
+(`pa3q`, `q7q`), which already use `P0_KERNEL_PHYS_LOAD = 0xa8000000`. The
+`0x80080000` value inherited from the ELF/boot header was wrong for the
+running kernel (and the e3q family's lack of any hardware-confirmed success is
+consistent with this).
+
+Also verified from the same oopses: linear map `VA = 0xffffff8000000000 +
+(phys - 0x80000000)` (probe VA ↔ phys pair) and `vmemmap =
+0xfffffffe00000000 + ((phys - 0x80000000) >> 12) * 0x40` (X22 `struct page`
+pointer in both register dumps), so `P0_PHYS_OFFSET`, `P0_PAGE_OFFSET`,
+`DIRECT_MAP_BASE` and `VMEMMAP_START` were already correct.
+
+Fix:
+
+- `P0_KERNEL_PHYS_LOAD`: `0x80080000` → `0xa8000000`.
+- `P0_ORACLE_PROBE_OFFSET`: back to `0x1f0000` → probe phys `0xa9f00000`,
+  inside the mapped kernel image region (pgd pages observed at
+  `0xa9d4a000`..`0xa9dba000`; next nomap region is `kaslr_region` at
+  `0xb01ff000`). All kernel-side data targets (`nfulnl_logger` phys
+  `0xa969b7b5+S`, `bootid_data` `0xaa30ab38+S`, `sysctl_bootid`,
+  `init_task`, `root_task_group`) now fall inside the mapped image+bss span
+  `[0xa8000000, 0xab350000)`.
+- `p0_fingerprint.h` regenerated at probe `0x1f0000` (generator verified 32
+  rows / 256 source qwords; SHA-256
+  `403ad33fbf5b45246a33adfae7e4b7cf9d07842f432e96bf0145bad6eab3e1d8`).
+- Rebuilt `cve-2026-43499-app.release.so` (104128 bytes, SHA-256
+  `e437580845f588ed0e1eb2f79772bc6df594af0a106a42b689e44d19db5b4d02`);
+  verified probe const `0x1f0000` present, stale `0x1aa0000` absent, phys
+  delta `0x28000000` compiled in, all fingerprint words embedded. Staged to
+  `artifacts/e3q-S928BXXS5CZC1/cve-2026-43499-app.so`.
+
+Run 5 also showed the earlier fixes hold: no more `rt_mutex_adjust_prio_chain`
+panic, physical writes through the reclaimed page succeeded
+(`p0 physical write status=0 ok=1`), and the pipe-buffer gate simply missed
+(`p0 physical pipe reclaim miss fresh=1/8`) — a reclaim placement issue, not
+an addressing bug.
