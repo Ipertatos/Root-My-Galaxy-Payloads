@@ -102,7 +102,7 @@
       ],
       "exploit": {
         "url": "https://raw.githubusercontent.com/Ipertatos/Root-My-Galaxy-Payloads/main/artifacts/e3q-S928BXXS6DZF2/cve-2026-43499-app.so",
-        "size": 96504
+        "size": 104128
       },
       "kernelsu": {
         "url": "https://raw.githubusercontent.com/Ipertatos/Root-My-Galaxy-Payloads/main/kernelsu/ksud-e3q-S928BXXS6DZF2-kdp",
